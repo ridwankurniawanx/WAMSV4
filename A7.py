@@ -1,6 +1,3 @@
-A7.py     SSIv2.py  SSIv4.py  SSIv6.py  SSIv8.py  Z19.py            pmu_3_worker.log
-SSIv1.py  SSIv3.py  SSIv5.py  SSIv7.py  SSIv9.py  pmu_1_worker.log
-root@5GB:~/20251219# cat A7.py
 # A7.py
 # Catatan: Kode ini secara fungsional identik dengan A6.py,
 # karena A6.py sudah dikonfigurasi untuk HANYA menggunakan PMU 1 dan PMU 3.
