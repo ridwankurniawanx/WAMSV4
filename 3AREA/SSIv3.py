@@ -19,7 +19,7 @@ INFLUXDB_CONFIG = {
     'source_bucket': 'pmu_synced_raw',
     'source_measurement': 'pmu_synced_opt',
     'source_field_freq1': 'freq_PMU_1', 
-    'source_field_freq2': 'freq_PMU_2', # BARU: Tambahan field PMU 2
+    'source_field_freq2': 'freq_PMU_2', # Input PMU 2
     'source_field_freq3': 'freq_PMU_3',
     'dest_bucket': 'pmu_synced_raw',
     'dest_measurement_final_modes': 'pmu_ssi_selected_modes'
@@ -40,7 +40,7 @@ DAMPING_MIN_THRESHOLD = 0.1
 
 class AdaptiveKalmanFilter:
     """Implementasi Adaptive Kalman Filter untuk meratakan hasil Damping"""
-    def __init__(self, q_init=0.0001, r_init=1):
+    def __init__(self, q_init=0.0001, r_init=1.5):
         self.q = q_init
         self.r = r_init
         self.p = 1.0
@@ -64,11 +64,11 @@ class AdaptiveKalmanFilter:
 class BandProcessorWithAKF:
     def __init__(self):
         self.buf_f1 = deque(maxlen=MAX_BUF)
-        self.buf_f2 = deque(maxlen=MAX_BUF) # BARU: Buffer PMU 2
+        self.buf_f2 = deque(maxlen=MAX_BUF) # Buffer PMU 2
         self.buf_f3 = deque(maxlen=MAX_BUF)
         self.ts_buf = deque(maxlen=MAX_BUF)
         
-        # Filter ditingkatkan ke 2.5Hz untuk mencakup rentang baru
+        # Filter ditingkatkan ke 2.5Hz
         self.filter_coeffs = butter(4, [0.1, 2], btype='band', fs=FS)
         self.last_sent_time = None
         
@@ -78,20 +78,17 @@ class BandProcessorWithAKF:
         self.akf_high = AdaptiveKalmanFilter()
 
     def compute_ssi(self, y1, y2, y3, n):
-        """Modified for 3-Input MIMO (PMU 1, 2, 3)"""
         try:
             # Normalisasi Input
             y1_n = (y1 - np.mean(y1)) / (np.std(y1) + 1e-9)
-            y2_n = (y2 - np.mean(y2)) / (np.std(y2) + 1e-9) # BARU: Normalisasi PMU 2
+            y2_n = (y2 - np.mean(y2)) / (np.std(y2) + 1e-9) # Normalisasi PMU 2
             y3_n = (y3 - np.mean(y3)) / (np.std(y3) + 1e-9)
             
             # Membentuk Matriks Data (Stacking Vertikal 3 Sinyal)
-            # Hasil shape Y akan menjadi (3, samples)
             Y = np.vstack([y1_n, y2_n, y3_n]) 
             
             dt = 1/FS
             # Perhitungan Matriks Kovariansi (Hankel)
-            # Logika Y.shape[1] tetap aman walau jumlah baris bertambah
             R = [(Y[:, i:] @ Y[:, :-i].T) / (Y.shape[1] - i) if i > 0 else (Y @ Y.T) / Y.shape[1] for i in range(n * 2)]
             
             H = np.zeros((n * 2, n * 2)) 
@@ -143,13 +140,13 @@ class BandProcessorWithAKF:
         all_cands = []
         # Mengambil data raw dari 3 Buffer
         y1_raw = np.array(list(self.buf_f1))
-        y2_raw = np.array(list(self.buf_f2)) # BARU
+        y2_raw = np.array(list(self.buf_f2)) # PMU 2
         y3_raw = np.array(list(self.buf_f3))
         
         for w in WINDOWS:
             # Filter ketiga sinyal
             y1 = filtfilt(self.filter_coeffs[0], self.filter_coeffs[1], y1_raw[-w:])
-            y2 = filtfilt(self.filter_coeffs[0], self.filter_coeffs[1], y2_raw[-w:]) # BARU
+            y2 = filtfilt(self.filter_coeffs[0], self.filter_coeffs[1], y2_raw[-w:]) # Filter PMU 2
             y3 = filtfilt(self.filter_coeffs[0], self.filter_coeffs[1], y3_raw[-w:])
             
             for n in ORDERS:
@@ -200,14 +197,11 @@ def main():
             records = [r for t in q_api.query(query) for r in t.records]
             if records:
                 for r in records:
-                    # Mengambil data dari 3 Field
+                    # Mengambil data langsung dengan gaya array, sama seperti kode awal
                     proc.buf_f1.append(float(r[INFLUXDB_CONFIG['source_field_freq1']]))
-                    
-                    # BARU: Pastikan field freq_PMU_2 ada di Influx atau handle error jika kosong
-                    val_2 = r.get(INFLUXDB_CONFIG['source_field_freq2'])
-                    proc.buf_f2.append(float(val_2) if val_2 is not None else 0.0)
-                    
+                    proc.buf_f2.append(float(r[INFLUXDB_CONFIG['source_field_freq2']])) # PMU 2
                     proc.buf_f3.append(float(r[INFLUXDB_CONFIG['source_field_freq3']]))
+                    
                     proc.ts_buf.append(r.get_time())
                 
                 proc.process(w_api)
