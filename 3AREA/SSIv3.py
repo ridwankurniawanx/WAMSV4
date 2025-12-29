@@ -40,7 +40,7 @@ DAMPING_MIN_THRESHOLD = 0.1
 
 class AdaptiveKalmanFilter:
     """Implementasi Adaptive Kalman Filter untuk meratakan hasil Damping"""
-    def __init__(self, q_init=0.0001, r_init=1.5):
+    def __init__(self, q_init=0.0001, r_init=1):
         self.q = q_init
         self.r = r_init
         self.p = 1.0
