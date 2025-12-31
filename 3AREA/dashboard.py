@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, jsonify, request, redirect, url_for
+from flask import Flask, render_template_string, jsonify, request, redirect, url_for, send_from_directory
 from influxdb_client import InfluxDBClient
 from scipy.signal import butter, filtfilt, hilbert
 import numpy as np
@@ -67,7 +67,7 @@ def lttb_downsample(data, threshold):
             area = abs(0.5 * (prev_x * (p_y - avg_y) + p_x * (avg_y - prev_y) + avg_x * (prev_y - p_y)))
             if area > max_area:
                 max_area = area
-                best_point = data[j]
+                max_point = data[j]
         sampled.append(best_point)
     sampled.append(data[-1])
     return sampled
@@ -205,7 +205,6 @@ HTML_TEMPLATE = """
         
         .audio-toggle { background: #21262d; color: #58a6ff; border: 1px solid var(--border-ui); padding: 4px 10px; border-radius: 4px; font-size: 0.65rem; cursor: pointer; font-weight: bold; }
         
-        /* FOOTER STYLE */
         footer { 
             background: var(--header-bg); 
             border-top: 1px solid var(--border-ui); 
@@ -344,6 +343,10 @@ HTML_TEMPLATE = """
         const canvas = document.getElementById('trendCanvas');
         const ctx = canvas ? canvas.getContext('2d') : null;
         let audioCtx = null; let isAudioEnabled = false; let alarmInterval = null; let currentStatus = "NORMAL";
+        
+        // OBJEK AUDIO UNTUK CRITICAL
+        const criticalAudio = new Audio('/critical.mp3');
+        criticalAudio.loop = true;
 
         function toggleAudio() {
             if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -367,9 +370,19 @@ HTML_TEMPLATE = """
 
         function manageAlarmSound() {
             if (alarmInterval) clearInterval(alarmInterval);
+            criticalAudio.pause();
+            criticalAudio.currentTime = 0;
+
             if (!isAudioEnabled) return;
-            if (currentStatus === "CRITICAL") alarmInterval = setInterval(() => playBeep(880, 0.15, 0.3, 'sawtooth'), 300);
-            else if (currentStatus === "WARNING") alarmInterval = setInterval(() => playBeep(440, 0.4, 0.2, 'sine'), 2000);
+
+            if (currentStatus === "CRITICAL") {
+                // PAKAI FILE MP3 UNTUK CRITICAL
+                criticalAudio.play().catch(e => console.error("Audio Play Error:", e));
+            } 
+            else if (currentStatus === "WARNING") {
+                // TETAP PAKAI BEEP UNTUK WARNING
+                alarmInterval = setInterval(() => playBeep(440, 0.4, 0.2, 'sine'), 2000);
+            }
         }
 
         function openModal() { document.getElementById('configModal').style.display = 'block'; }
@@ -494,6 +507,12 @@ HTML_TEMPLATE = """
 """
 
 # --- 4. BACKEND LOGIC ---
+
+# ROUTE UNTUK MENGIRIM FILE MP3 DARI FOLDER YANG SAMA
+@app.route('/critical.mp3')
+def serve_critical_sound():
+    return send_from_directory(os.getcwd(), 'critical.mp3')
+
 @app.route('/api/data')
 def api_data():
     minutes = request.args.get('min', default=5, type=int)
