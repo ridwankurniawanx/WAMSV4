@@ -43,32 +43,63 @@ INFLUXDB_CONFIG = {
 # --- 2. FUNGSI PENDUKUNG ---
 
 def lttb_downsample(data, threshold):
-    if threshold >= len(data) or threshold <= 2:
+    """
+    Versi Perbaikan: Menjamin pemilihan titik lebih stabil dengan 
+    memperbaiki bug variabel best_point.
+    """
+    data_len = len(data)
+    if threshold >= data_len or threshold <= 2:
         return data
-    sampled = [data[0]]
-    bucket_size = (len(data) - 2) / (threshold - 2)
-    for i in range(threshold - 2):
-        avg_range_start = int(np.floor((i + 1) * bucket_size) + 1)
-        avg_range_end = int(np.floor((i + 2) * bucket_size) + 1)
-        avg_range_end = min(avg_range_end, len(data))
+
+    sampled = []
+    # Selalu masukkan titik pertama
+    sampled.append(data[0])
+
+    # Ukuran bucket (dikurangi 2 untuk titik awal dan akhir)
+    every = (data_len - 2) / (threshold - 2)
+
+    next_selected_index = 0
+
+    for i in range(0, threshold - 2):
+        # Hitung rata-rata bucket selanjutnya (C)
+        avg_range_start = int(np.floor((i + 1) * every) + 1)
+        avg_range_end = int(np.floor((i + 2) * every) + 1)
+        avg_range_end = min(avg_range_end, data_len)
+
         avg_bucket = data[avg_range_start:avg_range_end]
-        avg_x = np.mean([datetime.fromisoformat(d['time']).timestamp() for d in avg_bucket])
-        avg_y = np.mean([d['d_akf'] for d in avg_bucket])
-        curr_range_start = int(np.floor(i * bucket_size) + 1)
-        curr_range_end = int(np.floor((i + 1) * bucket_size) + 1)
+        if not avg_bucket:
+            avg_x = 0
+            avg_y = 0
+        else:
+            avg_x = np.mean([datetime.fromisoformat(d['time']).timestamp() for d in avg_bucket])
+            avg_y = np.mean([d['d_akf'] for d in avg_bucket])
+
+        # Range bucket saat ini (B)
+        curr_range_start = int(np.floor(i * every) + 1)
+        curr_range_end = int(np.floor((i + 1) * every) + 1)
+
+        # Titik yang sudah terpilih sebelumnya (A)
         prev_point = sampled[-1]
         prev_x = datetime.fromisoformat(prev_point['time']).timestamp()
         prev_y = prev_point['d_akf']
+
         max_area = -1
-        best_point = data[curr_range_start]
+        best_point = data[curr_range_start] # Inisialisasi default
+
         for j in range(curr_range_start, curr_range_end):
             p_x = datetime.fromisoformat(data[j]['time']).timestamp()
             p_y = data[j]['d_akf']
+            
+            # Hitung luas segitiga (Area = 0.5 * |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)|)
             area = abs(0.5 * (prev_x * (p_y - avg_y) + p_x * (avg_y - prev_y) + avg_x * (prev_y - p_y)))
+            
             if area > max_area:
                 max_area = area
-                max_point = data[j]
+                best_point = data[j]
+        
         sampled.append(best_point)
+
+    # Selalu masukkan titik terakhir
     sampled.append(data[-1])
     return sampled
 
@@ -344,7 +375,6 @@ HTML_TEMPLATE = """
         const ctx = canvas ? canvas.getContext('2d') : null;
         let audioCtx = null; let isAudioEnabled = false; let alarmInterval = null; let currentStatus = "NORMAL";
         
-        // OBJEK AUDIO UNTUK CRITICAL
         const criticalAudio = new Audio('/critical.mp3');
         criticalAudio.loop = true;
 
@@ -376,11 +406,9 @@ HTML_TEMPLATE = """
             if (!isAudioEnabled) return;
 
             if (currentStatus === "CRITICAL") {
-                // PAKAI FILE MP3 UNTUK CRITICAL
                 criticalAudio.play().catch(e => console.error("Audio Play Error:", e));
             } 
             else if (currentStatus === "WARNING") {
-                // TETAP PAKAI BEEP UNTUK WARNING
                 alarmInterval = setInterval(() => playBeep(440, 0.4, 0.2, 'sine'), 2000);
             }
         }
@@ -442,11 +470,20 @@ HTML_TEMPLATE = """
 
             ctx.save(); ctx.beginPath(); ctx.rect(pL, pT, cW, cH); ctx.clip();
             if (!hideAkf) {
-                for (let i = 1; i < history.length; i++) {
-                    const x1 = getX(history[i-1].time); const x2 = getX(history[i].time);
-                    if (x2 < pL) continue;
-                    ctx.strokeStyle = getDampingColor(history[i].d_akf); ctx.lineWidth = 2.5;
-                    ctx.beginPath(); ctx.moveTo(x1, getY(history[i-1].d_akf)); ctx.lineTo(x2, getY(history[i].d_akf)); ctx.stroke();
+                ctx.beginPath();
+                ctx.lineWidth = 2.5;
+                let first = true;
+                for (let i = 0; i < history.length; i++) {
+                    const x = getX(history[i].time);
+                    const y = getY(history[i].d_akf);
+                    if (x < pL) continue;
+                    if (first) { ctx.moveTo(x, y); first = false; }
+                    else { ctx.lineTo(x, y); }
+                    // Stroke bertahap untuk warna dinamis (opsional, di sini kita buat solid per segmen untuk stabilitas)
+                    ctx.strokeStyle = getDampingColor(history[i].d_akf);
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(x,y);
                 }
             }
             history.forEach(pt => {
@@ -507,8 +544,6 @@ HTML_TEMPLATE = """
 """
 
 # --- 4. BACKEND LOGIC ---
-
-# ROUTE UNTUK MENGIRIM FILE MP3 DARI FOLDER YANG SAMA
 @app.route('/critical.mp3')
 def serve_critical_sound():
     return send_from_directory(os.getcwd(), 'critical.mp3')
@@ -554,12 +589,22 @@ def api_data():
                 "status": st, "amps": amps,
                 "sv": calculate_sv_standard(np.array(p_m), np.array(p_n), np.array(p_a), np.array(f_s), band)
             }
+        
+        # HISTORICAL DATA QUERY
         q_hist = f'''from(bucket: "{INFLUXDB_CONFIG["bucket"]}") |> range(start: -{minutes}m) |> filter(fn: (r) => r._measurement == "{INFLUXDB_CONFIG["measurement_ssi"]}") |> filter(fn: (r) => r._field == "low_band_d_akf" or r._field == "low_band_d") |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value") |> sort(columns: ["_time"])'''
         res_hist = q_api.query(q_hist); raw_history = []
         if res_hist:
             for t in res_hist:
-                for r in t.records: raw_history.append({'time': r.get_time().isoformat(), 'd_akf': r.values.get('low_band_d_akf', 10.0), 'd_raw': r.values.get('low_band_d', 10.0)})
-        history = lttb_downsample(raw_history, 500) if len(raw_history) > 500 else raw_history
+                for r in t.records: 
+                    raw_history.append({
+                        'time': r.get_time().isoformat(), 
+                        'd_akf': r.values.get('low_band_d_akf', 10.0), 
+                        'd_raw': r.values.get('low_band_d', 10.0)
+                    })
+        
+        # Threshold dinaikkan ke 800 agar grafik lebih rapat dan titik tidak melompat jauh
+        history = lttb_downsample(raw_history, 800) if len(raw_history) > 800 else raw_history
+        
     except Exception as e: print(f"API Error: {e}")
     finally: client.close()
     return jsonify({"current": current_data, "history": history})
